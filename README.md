@@ -6,13 +6,14 @@
 
 ## চালানো
 
-Node.js 22.13+ লাগবে (বিল্ট-ইন `node:sqlite` ব্যবহার করা হয়েছে, তাই আলাদা ডাটাবেস বা Redis লাগে না)।
+Node.js 22.13+ লাগবে। `DATABASE_URL` দিলে Postgres (Neon) ব্যবহার হয়, না দিলে লোকাল SQLite ফাইল। Redis লাগে না।
 
 ```bash
 npm install
 cp .env.example .env     # SESSION_SECRET, ADMIN_TOKEN বদলান
 npm start                # http://localhost:3000
-npm test
+npm test                 # SQLite-এ
+TEST_DATABASE_URL=postgres://... npm test   # একই টেস্ট Postgres-এ
 ```
 
 ডিফল্ট `VOICE_PROVIDER=mock`, তাই আসল কল যায় না। ড্যাশবোর্ডে "কল চলছে" অর্ডারে ১/২/৩ বাটন চেপে ফলাফল সিমুলেট করা যায়। অথবা `MOCK_AUTO_ANSWER=1` দিলে প্রতিটা কল নিজে থেকেই "১" চাপা হিসেবে ধরা হবে।
@@ -29,7 +30,11 @@ npm test
 | কল সময় সকাল ৯টা–রাত ৯টা (ঢাকা); রাতের অর্ডার পরদিন সকালে | `clampToCallWindow` |
 | ৩ চাপলে ফরওয়ার্ড + নোটিফিকেশন (`NOTIFY_WEBHOOK_URL` দিয়ে SMS/Telegram) | `src/voice/ivr.js`, `src/services/notify.js` |
 | ড্যাশবোর্ড: কনফার্মড / বাতিল / ধরেনি / নম্বর ভুল / কল ব্যাক | `/dashboard` |
-| এক ক্লিকে কুরিয়ার: Steadfast, Pathao, RedX | `src/services/courier.js` |
+| এক ক্লিকে Steadfast বুকিং (একটা বা সব কনফার্মড একসাথে), ডেলিভারি স্ট্যাটাস webhook, ফ্রড চেক, ব্যালেন্স টেস্ট | `src/services/steadfast.js` |
+| Pathao, RedX (বেটা) | `src/services/courier.js` |
+| OpenRouter: প্রোডাক্টের নাম শুদ্ধ উচ্চারণের বাংলায় (TTS-এর জন্য), Messenger মেসেজ পেস্ট করে অর্ডার | `src/services/llm.js` |
+| প্রাইসিং প্ল্যান (ফ্রি / স্টার্টার / গ্রোথ / প্রো) | `src/pricing.js`, `/pricing` |
+| Google Sheet টেমপ্লেট | `/sheet-template.csv` |
 | রিস্ক ফ্ল্যাগ: বারবার বাতিল বা না ধরা নম্বর (সব সেলারের ডাটা মিলিয়ে) | `/risk` |
 | মাসে প্রথম ৫০ কল ফ্রি, তারপর bKash প্রি-পেইড ক্রেডিট | `src/services/billing.js`, `/billing` |
 | বাংলা TTS বা সেলারের নিজের রেকর্ড করা গলা | সেটিংস → ভয়েস |
@@ -80,6 +85,47 @@ curl -X POST $BASE_URL/admin/topup -H "Authorization: Bearer $ADMIN_TOKEN" \
 
 একই TrxID দুইবার দিলে ক্রেডিট দুইবার যোগ হয় না। পরে bKash Payment Gateway (Tokenized Checkout) লাগালে তার webhook `X-Bkash-Signature` (body-র HMAC-SHA256, `BKASH_WEBHOOK_SECRET`) দিয়ে এই একই endpoint-এ পাঠানো যাবে।
 
+## প্রাইসিং
+
+| প্ল্যান | দাম | কল | প্রতি কল |
+|---|---|---|---|
+| ফ্রি | ০ | প্রতি মাসে ৫০ | – |
+| স্টার্টার | ৳৫০০ | ৪০০ | ৳১.২৫ |
+| গ্রোথ | ৳১,৫০০ | ১,৪০০ | ~৳১.০৭ |
+| প্রো | ৳৪,০০০ | ৪,০০০ | ৳১ |
+
+১ ক্রেডিট = কাস্টমার ধরেছে এমন ১টা কল। না ধরলে বা রিট্রাই কলে চার্জ নেই, ক্রেডিটের মেয়াদ নেই, সব প্ল্যানে সব ফিচার। প্যাকের দামের সমান টাকা পাঠালে পুরো প্যাক, অন্য পরিমাণে `TAKA_PER_CREDIT` রেটে। **এই দামগুলো আপাতত বসানো।** প্রোভাইডারের প্রতি মিনিটের রেট জানার পর `src/pricing.js`-এ ঠিক করুন, যাতে খরচের ওপর কমপক্ষে ~৪০% মার্জিন থাকে।
+
+## Steadfast
+
+1. Steadfast প্যানেল → API → Your API keys থেকে Api-Key আর Secret-Key নিন।
+2. সেটিংস → কুরিয়ার: Steadfast বেছে নিন, JSON দিন `{"api_key":"...","secret_key":"..."}`, তারপর "Steadfast কানেকশন টেস্ট" চাপুন (ব্যালেন্স দেখাবে)।
+3. ডেলিভারি আপডেটের জন্য: সেটিংসে "নতুন token তৈরি করুন" চাপুন, তারপর Steadfast প্যানেল → Webhook-এ Callback URL আর Auth token বসান।
+4. লাইভে `COURIER_DRY_RUN` সরিয়ে দিন। **Steadfast-এর কোনো স্যান্ডবক্স নেই**, লাইভ key দিয়ে প্রতিটা বুকিং আসল পার্সেল।
+
+প্রতিটা অর্ডারের invoice হয় `CVR-<অর্ডার নম্বর>`। Steadfast একই invoice দুইবার নেয় না, তাই ডাবল ক্লিক বা টাইমআউটের পরে আবার চাপলে দুইবার বুক হয় না।
+
+Steadfast-এর অফিসিয়াল ডকুমেন্টেশন এই সেশন থেকে খোলা যায়নি। এন্ডপয়েন্ট আর ফিল্ডগুলো npm-এর `steadfast-merchant-sdk` আর `steadfast-courier` প্যাকেজের সোর্স থেকে মেলানো (সেগুলো Steadfast-এর নিজের Laravel প্যাকেজের সাথে মিলিয়ে বানানো)। প্রথম আসল বুকিংয়ের আগে প্যানেলের API গাইডের সাথে একবার মিলিয়ে নিন।
+
+## OpenRouter
+
+`OPENROUTER_API_KEY` দিলে দুটো জিনিস চালু হয়, না দিলে আগের মতোই চলে:
+- **কলের ভাষা:** "Men's Polo T-shirt XL x2" কলে শোনাবে "দুইটা মেনস পোলো টি-শার্ট, এক্স এল"। প্রতিটা অর্ডারে একবারই AI-কে জিজ্ঞেস করা হয় (`orders.product_spoken`-এ রাখা থাকে)। AI না চললে আসল নামটাই পড়া হয়।
+- **মেসেজ থেকে অর্ডার:** নতুন অর্ডার পেজে কাস্টমারের Messenger বা WhatsApp মেসেজ পেস্ট করলে ফর্মটা নিজে থেকে পূরণ হয়। সেলার মিলিয়ে নিয়ে সেভ করে। দাম না লেখা থাকলে AI দাম আন্দাজ করে না।
+
+মডেল বদলাতে `OPENROUTER_MODEL` দিন (ডিফল্ট `google/gemini-2.5-flash`)।
+
+## Vercel-এ ডিপ্লয় (সাবডোমেইন: confirm.rokyuddin.com)
+
+1. **রিপো ইমপোর্ট:** vercel.com → Add New → Project → `rokyuddin/confirmvr` বেছে নিন। Framework Preset: **Other**। বাকি সেটিং যেমন আছে তেমন থাকবে (`vercel.json` আছে)।
+2. **ডাটাবেস:** প্রজেক্টের Storage ট্যাব → Marketplace → **Neon** → Create। এতে `DATABASE_URL` নিজে থেকেই সেট হয়ে যায়। প্রথম রিকোয়েস্টেই টেবিল তৈরি হয়ে যাবে।
+3. **Environment Variables** (Settings → Environment Variables): `BASE_URL=https://confirm.rokyuddin.com`, `SESSION_SECRET`, `ADMIN_TOKEN`, `CRON_SECRET` (প্রতিটায় লম্বা র‍্যান্ডম স্ট্রিং, যেমন `openssl rand -hex 32`), দরকার হলে `OPENROUTER_API_KEY`, `BKASH_MERCHANT_NUMBER`, ভয়েস প্রোভাইডারের key। তারপর Redeploy।
+4. **সাবডোমেইন:** Settings → Domains → `confirm.rokyuddin.com` যোগ করুন। তারপর যেখানে rokyuddin.com-এর DNS আছে (Cloudflare, Namecheap ইত্যাদি) সেখানে একটা রেকর্ড দিন:
+   `CNAME  confirm  →  cname.vercel-dns.com` (Cloudflare হলে প্রক্সি বন্ধ রাখুন, শুধু DNS)। কয়েক মিনিটে SSL চালু হয়ে যাবে। অন্য নাম চাইলে `confirm`-এর জায়গায় সেটা দিন।
+5. **প্রতি মিনিটে শিডিউলার চালানো:** Vercel-এ সার্ভার সবসময় চালু থাকে না, তাই কল পাঠানোর কাজটা একটা cron ডাকে। Vercel Hobby প্ল্যানে cron দিনে একবারের বেশি চলে না, তাই ফ্রি [cron-job.org](https://cron-job.org)-এ একটা জব বানান:
+   URL `https://confirm.rokyuddin.com/api/cron/tick`, প্রতি ১ মিনিটে, হেডার `Authorization: Bearer <CRON_SECRET>`। এতে কল, রিট্রাই আর শিট সিঙ্ক তিনটাই চলে। (Vercel Pro থাকলে `vercel.json`-এ `"crons": [{"path":"/api/cron/tick","schedule":"* * * * *"}]` যোগ করলেও হবে; Vercel নিজে থেকেই `CRON_SECRET` হেডার পাঠায়।)
+6. যাচাই: `https://confirm.rokyuddin.com/healthz` খুললে `{"ok":true}` দেখাবে।
+
 ## কুরিয়ার সেটিংস (JSON)
 
 - Steadfast: `{"api_key":"...","secret_key":"..."}`
@@ -92,17 +138,18 @@ curl -X POST $BASE_URL/admin/topup -H "Authorization: Bearer $ADMIN_TOKEN" \
 
 - `SESSION_SECRET`, `ADMIN_TOKEN`, `VOICE_WEBHOOK_SECRET` লম্বা র‍্যান্ডম স্ট্রিং দিন, আর HTTPS-এ চালান (`BASE_URL=https://...`)।
 - শুধু অর্ডার কনফার্মেশন কল করুন। মার্কেটিং কল করলে BTRC-র নিয়ম ভাঙবে, প্রোভাইডার একাউন্টও বন্ধ হতে পারে।
-- এখানে কিউ হিসেবে SQLite টেবিল (`orders.next_call_at`) ব্যবহার করা হয়েছে, যেটা একটা সার্ভারে ভালো চলে। একাধিক সার্ভারে চালাতে হলে `calls.tick()` এর জায়গায় BullMQ/Redis বসান।
-- `data/` ফোল্ডারের নিয়মিত ব্যাকআপ রাখুন।
+- কিউ হিসেবে `orders.next_call_at` কলাম ব্যবহার হয়। প্রতিটা অর্ডার কল দেওয়ার আগে ডাটাবেসে "দখল" করা হয়, তাই একসাথে কয়েকটা সার্ভার বা cron চললেও একই কাস্টমারকে দুইবার কল যায় না।
+- Neon-এর ব্যাকআপ (point-in-time restore) চালু রাখুন।
 
 ## স্ট্রাকচার
 
 ```
 src/
-  server.js, app.js, config.js, db.js (স্কিমা), auth.js, util.js
+  server.js (সাধারণ সার্ভার), app.js, config.js, db.js (Postgres/SQLite + স্কিমা), auth.js, util.js, pricing.js
+api/index.js               Vercel এন্ট্রি
   routes/web.js            সেলার ড্যাশবোর্ড ও পেজগুলো
-  routes/integrations.js   webhook, API, ভয়েস কলব্যাক, অ্যাডমিন টপআপ
-  services/                orders, calls (শিডিউলার), billing, sheets, courier, risk, notify
+  routes/integrations.js   webhook (Woo/Shopify/Steadfast), API, ভয়েস কলব্যাক, cron, অ্যাডমিন টপআপ
+  services/                orders, calls (শিডিউলার), billing, sheets, steadfast, courier, llm (OpenRouter), risk, notify
   voice/                   ivr (কল স্ক্রিপ্ট), mock, http (প্রোভাইডার অ্যাডাপ্টার)
 test/core.test.js
 ```

@@ -38,10 +38,12 @@ function logout(res) {
   res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
-function loadSeller(req, _res, next) {
-  const id = verify(parseCookies(req.headers.cookie)[COOKIE]);
-  req.seller = id ? db.get().prepare('SELECT * FROM sellers WHERE id=?').get(id) : null;
-  next();
+async function loadSeller(req, _res, next) {
+  try {
+    const id = verify(parseCookies(req.headers.cookie)[COOKIE]);
+    req.seller = id ? await db.one('SELECT * FROM sellers WHERE id=?', [id]) : null;
+    next();
+  } catch (e) { next(e); }
 }
 function requireSeller(req, res, next) {
   if (!req.seller) return res.redirect('/login');

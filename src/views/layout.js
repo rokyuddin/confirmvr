@@ -15,9 +15,10 @@ function layout({ title, seller, body, flash }) {
     <a href="/orders/new">নতুন অর্ডার</a>
     <a href="/risk">রিস্ক</a>
     <a href="/billing">ক্রেডিট</a>
+    <a href="/pricing">প্রাইসিং</a>
     <a href="/settings">সেটিংস</a>
     <form method="post" action="/logout" class="inline"><button class="link">লগআউট</button></form>
-  </nav>` : `<nav><a href="/login">লগইন</a><a href="/signup" class="btn">ফ্রি শুরু করুন</a></nav>`}
+  </nav>` : `<nav><a href="/pricing">প্রাইসিং</a><a href="/login">লগইন</a><a href="/signup" class="btn">ফ্রি শুরু করুন</a></nav>`}
 </header>
 <main>
 ${flash ? `<div class="flash ${esc(flash.type || 'ok')}">${esc(flash.msg)}</div>` : ''}

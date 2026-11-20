@@ -17,6 +17,10 @@ const num = (k, d) => Number(env(k, d));
 module.exports = {
   port: num('PORT', 3000),
   baseUrl: env('BASE_URL', 'http://localhost:3000'),
+  databaseUrl: env('DATABASE_URL', env('POSTGRES_URL', '')),
+  cronSecret: env('CRON_SECRET', ''),
+  openrouterApiKey: env('OPENROUTER_API_KEY', ''),
+  openrouterModel: env('OPENROUTER_MODEL', 'google/gemini-2.5-flash'),
   dbPath: env('DB_PATH', path.join(__dirname, '..', 'data', 'confirmvr.db')),
   sessionSecret: env('SESSION_SECRET', 'dev-secret-change-me'),
   adminToken: env('ADMIN_TOKEN', ''),

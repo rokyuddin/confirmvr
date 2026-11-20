@@ -48,3 +48,14 @@ table.orders { width:100%; border-collapse:collapse; background:var(--card); bor
   .orders tr { display:block; border-bottom:1px solid var(--line); }
   .orders td { display:block; border:0; padding:6px 10px; }
 }
+.center { text-align:center; }
+.plans { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin:16px 0; }
+.plan { position:relative; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; display:flex; flex-direction:column; gap:6px; }
+.plan h3 { margin:0; }
+.plan p { margin:0; }
+.plan .price { font-size:2rem; font-weight:700; margin-top:8px; }
+.plan ul { padding-left:18px; margin:8px 0 12px; flex:1; }
+.plan .btn { text-align:center; margin-top:auto; }
+.plan.popular { border:2px solid var(--brand); box-shadow:0 6px 20px rgba(15,118,110,.12); }
+.ribbon { position:absolute; top:-12px; right:16px; background:var(--brand); color:#fff; font-size:.8rem; padding:3px 10px; border-radius:12px; }
+button[disabled] { opacity:.5; cursor:not-allowed; }

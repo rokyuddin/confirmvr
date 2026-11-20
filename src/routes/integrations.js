@@ -1,20 +1,23 @@
 'use strict';
-/** Machine-facing routes: store webhooks, public API, voice provider callback, admin. */
+/** Machine-facing routes: store webhooks, public API, voice callback, Steadfast webhook, cron, admin. */
 const express = require('express');
 const db = require('../db');
 const config = require('../config');
 const billing = require('../services/billing');
+const calls = require('../services/calls');
+const sheets = require('../services/sheets');
 const { createOrder } = require('../services/orders');
-const { handleCallResult } = require('../services/calls');
+const { notify } = require('../services/notify');
 const { hmac, safeEqual } = require('../util');
 
 const r = express.Router();
-const sellerByToken = (t) => db.get().prepare('SELECT * FROM sellers WHERE webhook_token=?').get(String(t || ''));
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+const sellerByToken = (t) => db.one('SELECT * FROM sellers WHERE webhook_token=?', [String(t || '')]);
 const items = (lines = []) => lines.map((l) => (l.quantity > 1 ? `${l.name} ${l.quantity}টি` : l.name)).join(', ') || 'প্রোডাক্ট';
 
-function respond(res, fn) {
+async function respond(res, fn) {
   try {
-    const { order, created } = fn();
+    const { order, created } = await fn();
     res.status(created ? 201 : 200).json({ ok: true, order_id: order.id, status: order.status, created });
   } catch (e) {
     res.status(422).json({ ok: false, error: e.message });
@@ -22,8 +25,8 @@ function respond(res, fn) {
 }
 
 // ---- WooCommerce: Topic "Order created" ----
-r.post('/webhooks/woocommerce/:token', (req, res) => {
-  const seller = sellerByToken(req.params.token);
+r.post('/webhooks/woocommerce/:token', wrap(async (req, res) => {
+  const seller = await sellerByToken(req.params.token);
   if (!seller) return res.status(404).json({ error: 'unknown token' });
   if (!req.body || !req.body.id) return res.json({ ok: true, ping: true }); // Woo sends a ping on webhook creation
   if (seller.woo_secret) {
@@ -33,7 +36,7 @@ r.post('/webhooks/woocommerce/:token', (req, res) => {
   const o = req.body;
   const b = o.billing || {};
   const s = o.shipping || {};
-  respond(res, () => createOrder(seller.id, {
+  await respond(res, () => createOrder(seller.id, {
     source: 'woocommerce',
     external_id: o.id,
     customer_name: [b.first_name, b.last_name].filter(Boolean).join(' '),
@@ -42,11 +45,11 @@ r.post('/webhooks/woocommerce/:token', (req, res) => {
     amount: o.total,
     address: [s.address_1 || b.address_1, s.city || b.city].filter(Boolean).join(', '),
   }));
-});
+}));
 
 // ---- Shopify: "Order creation" webhook ----
-r.post('/webhooks/shopify/:token', (req, res) => {
-  const seller = sellerByToken(req.params.token);
+r.post('/webhooks/shopify/:token', wrap(async (req, res) => {
+  const seller = await sellerByToken(req.params.token);
   if (!seller) return res.status(404).json({ error: 'unknown token' });
   if (seller.shopify_secret) {
     const sig = req.get('X-Shopify-Hmac-Sha256') || '';
@@ -54,7 +57,7 @@ r.post('/webhooks/shopify/:token', (req, res) => {
   }
   const o = req.body || {};
   const a = o.shipping_address || o.billing_address || {};
-  respond(res, () => createOrder(seller.id, {
+  await respond(res, () => createOrder(seller.id, {
     source: 'shopify',
     external_id: o.id,
     customer_name: a.name || [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(' '),
@@ -63,51 +66,91 @@ r.post('/webhooks/shopify/:token', (req, res) => {
     amount: o.total_price,
     address: [a.address1, a.address2, a.city].filter(Boolean).join(', '),
   }));
-});
+}));
+
+// ---- Steadfast delivery-status webhook ----
+// Panel → Webhook: Callback URL = /webhooks/steadfast/:token, Auth token = seller's steadfast_webhook_token.
+r.post('/webhooks/steadfast/:token', wrap(async (req, res) => {
+  const seller = await sellerByToken(req.params.token);
+  if (!seller || !seller.steadfast_webhook_token) return res.status(404).json({ status: 'error', message: 'unknown endpoint' });
+  const bearer = /^Bearer\s+(.+)$/i.exec(req.get('Authorization') || '')?.[1] || '';
+  if (!safeEqual(bearer, seller.steadfast_webhook_token)) return res.status(401).json({ status: 'error', message: 'unauthorized' });
+
+  const key = req.get('Idempotency-Key');
+  if (key) {
+    const seen = await db.one('SELECT 1 AS x FROM webhook_events WHERE key=?', [`sf:${key}`]);
+    if (seen) return res.json({ status: 'success', message: 'duplicate' });
+  }
+
+  const e = req.body || {};
+  const type = e.notification_type || 'delivery_status';
+  if (type === 'delivery_status' && e.status) {
+    const status = String(e.status).toLowerCase();
+    const order = await db.one(
+      `SELECT * FROM orders WHERE seller_id=? AND courier_status='sent' AND (courier_ref=? OR courier_ref=? OR ?=('CVR-' || id))`,
+      [seller.id, String(e.consignment_id ?? ''), String(e.invoice ?? ''), String(e.invoice ?? '')]);
+    if (order) {
+      await db.run('UPDATE orders SET courier_delivery_status=?, updated_at=? WHERE id=?', [status, db.now(), order.id]);
+      if (status === 'cancelled' || status === 'partial_delivered') {
+        await notify(seller.id, order.id, `Steadfast: অর্ডার #${order.id} ${status === 'cancelled' ? 'রিটার্ন হচ্ছে' : 'আংশিক ডেলিভারি হয়েছে'} (${order.phone})।`);
+      }
+    }
+  }
+  if (key) await db.run('INSERT INTO webhook_events (key, created_at) VALUES (?,?)', [`sf:${key}`, db.now()]).catch(() => {});
+  res.json({ status: 'success', message: 'Webhook received' });
+}));
 
 // ---- Generic JSON API ----
-r.post('/api/orders', (req, res) => {
-  const seller = sellerByToken(req.get('X-Api-Key'));
+r.post('/api/orders', wrap(async (req, res) => {
+  const seller = await sellerByToken(req.get('X-Api-Key'));
   if (!seller) return res.status(401).json({ error: 'invalid X-Api-Key' });
-  respond(res, () => createOrder(seller.id, { ...req.body, source: 'api' }));
-});
+  await respond(res, () => createOrder(seller.id, { ...req.body, source: 'api' }));
+}));
 
-r.get('/api/orders/:id', (req, res) => {
-  const seller = sellerByToken(req.get('X-Api-Key'));
+r.get('/api/orders/:id', wrap(async (req, res) => {
+  const seller = await sellerByToken(req.get('X-Api-Key'));
   if (!seller) return res.status(401).json({ error: 'invalid X-Api-Key' });
-  const o = db.get().prepare('SELECT id, external_id, status, attempts, courier_ref FROM orders WHERE id=? AND seller_id=?').get(Number(req.params.id), seller.id);
+  const o = await db.one('SELECT id, external_id, status, attempts, courier_ref, courier_tracking, courier_delivery_status FROM orders WHERE id=? AND seller_id=?', [Number(req.params.id), seller.id]);
   o ? res.json(o) : res.status(404).json({ error: 'not found' });
-});
+}));
 
 // ---- Voice provider result callback ----
-r.post('/voice/callback', async (req, res) => {
+r.post('/voice/callback', wrap(async (req, res) => {
   if (config.voiceWebhookSecret && !safeEqual(req.get('X-Webhook-Secret') || req.query.secret || '', config.voiceWebhookSecret)) {
     return res.status(401).json({ error: 'bad secret' });
   }
-  const out = await handleCallResult(req.body || {});
+  const out = await calls.handleCallResult(req.body || {});
   res.status(out.ok ? 200 : 404).json(out);
-});
+}));
 
-// ---- bKash payment verification (from admin tool or payment-gateway webhook) ----
-r.post('/admin/topup', (req, res) => {
+// ---- Scheduler tick (Vercel / external cron, every minute) ----
+r.get('/api/cron/tick', wrap(async (req, res) => {
+  const token = /^Bearer\s+(.+)$/i.exec(req.get('Authorization') || '')?.[1] || req.query.secret || '';
+  if (!config.cronSecret || !safeEqual(token, config.cronSecret)) return res.status(401).json({ error: 'unauthorized' });
+  const result = await calls.tick();
+  await sheets.syncAll().catch((e) => console.error('[cron] sheets', e.message));
+  res.json({ ok: true, ...result });
+}));
+
+// ---- bKash payment verification (admin tool or payment-gateway webhook) ----
+r.post('/admin/topup', wrap(async (req, res) => {
   const token = req.get('Authorization')?.replace(/^Bearer /, '');
   const ok = (config.adminToken && safeEqual(token || '', config.adminToken)) ||
     (config.bkashWebhookSecret && safeEqual(req.get('X-Bkash-Signature') || '', hmac(config.bkashWebhookSecret, req.rawBody || '')));
   if (!ok) return res.status(401).json({ error: 'unauthorized' });
   const { seller_id, amount, trx_id } = req.body || {};
   const sellerId = Number(String(seller_id).replace(/^CVR/i, ''));
-  if (!db.get().prepare('SELECT 1 FROM sellers WHERE id=?').get(sellerId)) return res.status(404).json({ error: 'seller not found' });
+  if (!(await db.one('SELECT 1 AS x FROM sellers WHERE id=?', [sellerId]))) return res.status(404).json({ error: 'seller not found' });
   try {
-    const credited = billing.topUp(sellerId, amount, trx_id);
+    const credited = await billing.topUp(sellerId, amount, trx_id);
     if (credited) {
-      // Release orders paused for lack of credit.
-      const { requeue } = require('../services/calls');
-      for (const o of db.get().prepare("SELECT id FROM orders WHERE seller_id=? AND status='no_credit'").all(sellerId)) requeue(o.id);
+      for (const o of await db.all("SELECT id FROM orders WHERE seller_id=? AND status='no_credit'", [sellerId])) await calls.requeue(o.id);
+      await notify(sellerId, null, `রিচার্জ সফল: ${amount} টাকা (TrxID ${trx_id})।`);
     }
-    res.json({ ok: true, credited, balance: billing.summary(sellerId).credits });
+    res.json({ ok: true, credited, balance: (await billing.summary(sellerId)).credits });
   } catch (e) {
     res.status(422).json({ error: e.message });
   }
-});
+}));
 
 module.exports = r;

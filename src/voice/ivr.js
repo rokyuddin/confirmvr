@@ -24,7 +24,7 @@ const tts = (text) => ({ type: 'tts', text, lang: 'bn-BD' });
 function fullText(seller, order) {
   return (
     `আসসালামু আলাইকুম, ${seller.page_name} থেকে বলছি। ` +
-    `আপনি ${order.product} অর্ডার করেছেন, মোট ${bnTaka(order.amount)}। ` +
+    `আপনি ${order.product_spoken || order.product} অর্ডার করেছেন, মোট ${bnTaka(order.amount)}। ` +
     'অর্ডার নিশ্চিত করতে ১ চাপুন, বাতিল করতে ২, কারো সাথে কথা বলতে ৩।'
   );
 }
@@ -37,7 +37,7 @@ function buildScript(seller, order) {
     prompts.push(staticPrompt('greeting.mp3', 'আসসালামু আলাইকুম,'));
     prompts.push(tts(`${seller.page_name} থেকে বলছি।`));
   }
-  prompts.push(tts(`আপনি ${order.product} অর্ডার করেছেন, মোট ${bnTaka(order.amount)}।`));
+  prompts.push(tts(`আপনি ${order.product_spoken || order.product} অর্ডার করেছেন, মোট ${bnTaka(order.amount)}।`));
   prompts.push(staticPrompt('menu.mp3', 'অর্ডার নিশ্চিত করতে ১ চাপুন, বাতিল করতে ২, কারো সাথে কথা বলতে ৩।'));
 
   const onDigit = {

@@ -24,23 +24,23 @@ const HEADERS = {
 function mapHeader(row) {
   const idx = {};
   row.forEach((h, i) => {
-    const k = h.trim().toLowerCase();
+    const k = h.replace(/^\ufeff/, '').trim().toLowerCase();
     for (const [field, names] of Object.entries(HEADERS)) if (idx[field] === undefined && names.includes(k)) idx[field] = i;
   });
   return idx;
 }
 
-function importCsv(sellerId, csvText) {
+async function importCsv(sellerId, csvText) {
   const rows = parseCsv(csvText);
   if (rows.length < 2) return { created: 0, skipped: 0, errors: [] };
   const idx = mapHeader(rows[0]);
   for (const f of ['phone', 'product', 'amount']) if (idx[f] === undefined) throw new Error(`Sheet column missing: ${f}`);
   let created = 0, skipped = 0;
   const errors = [];
-  rows.slice(1).forEach((r, i) => {
+  for (const [i, r] of rows.slice(1).entries()) {
     const pick = (f) => (idx[f] === undefined ? '' : (r[idx[f]] || '').trim());
     try {
-      const res = createOrder(sellerId, {
+      const res = await createOrder(sellerId, {
         source: 'sheet',
         external_id: pick('external_id') || `row-${i + 2}`,
         customer_name: pick('customer_name'),
@@ -53,21 +53,24 @@ function importCsv(sellerId, csvText) {
     } catch (e) {
       errors.push(`row ${i + 2}: ${e.message}`);
     }
-  });
+  }
   return { created, skipped, errors };
 }
 
 async function syncSeller(seller) {
   if (!seller.sheet_csv_url) return null;
-  const res = await fetch(seller.sheet_csv_url, { redirect: 'follow' });
+  const res = await fetch(seller.sheet_csv_url, { redirect: 'follow', signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`Sheet fetch failed: ${res.status}`);
-  const out = importCsv(seller.id, await res.text());
-  db.get().prepare("UPDATE sellers SET sheet_last_sync=datetime('now') WHERE id=?").run(seller.id);
+  const out = await importCsv(seller.id, await res.text());
+  await db.run('UPDATE sellers SET sheet_last_sync=? WHERE id=?', [db.now(), seller.id]);
   return out;
 }
 
-async function syncAll() {
-  const sellers = db.get().prepare(`SELECT * FROM sellers WHERE sheet_csv_url IS NOT NULL AND sheet_csv_url != ''`).all();
+/** Sync every seller whose sheet was not synced in the last SHEET_SYNC_INTERVAL_MIN. */
+async function syncAll(now = new Date()) {
+  const cutoff = new Date(now.getTime() - config.sheetSyncIntervalMin * 60e3 + 30e3).toISOString();
+  const sellers = await db.all(
+    `SELECT * FROM sellers WHERE sheet_csv_url IS NOT NULL AND sheet_csv_url != '' AND (sheet_last_sync IS NULL OR sheet_last_sync <= ?) LIMIT 20`, [cutoff]);
   for (const s of sellers) {
     try { await syncSeller(s); } catch (e) { console.error(`[sheets] seller #${s.id}:`, e.message); }
   }

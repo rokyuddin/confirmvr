@@ -6,17 +6,16 @@
 const db = require('../db');
 const config = require('../config');
 
-function phoneStats(phones) {
-  if (!phones.length) return {};
+async function phoneStats(phones) {
   const uniq = [...new Set(phones)];
-  const rows = db.get().prepare(
+  if (!uniq.length) return {};
+  const rows = await db.all(
     `SELECT phone,
-            COUNT(*) total,
-            SUM(status='confirmed') confirmed,
-            SUM(status='cancelled') cancelled,
-            SUM(status='no_answer') no_answer
-       FROM orders WHERE phone IN (${uniq.map(() => '?').join(',')}) GROUP BY phone`
-  ).all(...uniq);
+            COUNT(*) AS total,
+            SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END) AS confirmed,
+            SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
+            SUM(CASE WHEN status='no_answer' THEN 1 ELSE 0 END) AS no_answer
+       FROM orders WHERE phone IN (${uniq.map(() => '?').join(',')}) GROUP BY phone`, uniq);
   const out = {};
   for (const r of rows) {
     const flags = [];
@@ -27,9 +26,12 @@ function phoneStats(phones) {
   return out;
 }
 
-function riskyNumbers(sellerId, limit = 50) {
-  const phones = db.get().prepare('SELECT DISTINCT phone FROM orders WHERE seller_id=?').all(sellerId).map((r) => r.phone);
-  return Object.values(phoneStats(phones)).filter((s) => s.risky).sort((a, b) => b.cancelled + b.no_answer - (a.cancelled + a.no_answer)).slice(0, limit);
+async function riskyNumbers(sellerId, limit = 50) {
+  const phones = (await db.all('SELECT DISTINCT phone FROM orders WHERE seller_id=?', [sellerId])).map((r) => r.phone);
+  return Object.values(await phoneStats(phones))
+    .filter((s) => s.risky)
+    .sort((a, b) => b.cancelled + b.no_answer - (a.cancelled + a.no_answer))
+    .slice(0, limit);
 }
 
 module.exports = { phoneStats, riskyNumbers };

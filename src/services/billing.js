@@ -1,26 +1,26 @@
 'use strict';
 /**
  * Billing: first N answered calls per calendar month (Dhaka) are free, then prepaid
- * credits (topped up via bKash) are deducted per answered call.
+ * credits (bKash top-up, see pricing.js) are deducted per answered call.
  */
 const db = require('../db');
 const config = require('../config');
+const { creditsForPayment } = require('../pricing');
 
 function monthStartUtc(now = new Date()) {
   const local = new Date(now.getTime() + 6 * 3600e3);
   return new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), 1) - 6 * 3600e3);
 }
-const sqlTs = (d) => d.toISOString().replace('T', ' ').slice(0, 19);
 
-function freeCallsUsed(sellerId, now = new Date()) {
-  return db.get()
-    .prepare(`SELECT COUNT(*) n FROM ledger WHERE seller_id=? AND kind='free_call' AND created_at >= ?`)
-    .get(sellerId, sqlTs(monthStartUtc(now))).n;
+async function freeCallsUsed(sellerId, now = new Date(), q = db) {
+  const r = await q.one(`SELECT COUNT(*) AS n FROM ledger WHERE seller_id=? AND kind='free_call' AND created_at >= ?`,
+    [sellerId, monthStartUtc(now).toISOString()]);
+  return r.n;
 }
 
-function summary(sellerId) {
-  const s = db.get().prepare('SELECT credits FROM sellers WHERE id=?').get(sellerId);
-  const used = freeCallsUsed(sellerId);
+async function summary(sellerId) {
+  const s = await db.one('SELECT credits FROM sellers WHERE id=?', [sellerId]);
+  const used = await freeCallsUsed(sellerId);
   return {
     credits: s ? s.credits : 0,
     freeUsed: used,
@@ -29,37 +29,34 @@ function summary(sellerId) {
   };
 }
 
-function canPlaceCall(sellerId) {
-  const b = summary(sellerId);
+async function canPlaceCall(sellerId) {
+  const b = await summary(sellerId);
   return b.freeLeft > 0 || b.credits >= config.creditsPerCall;
 }
 
-/** Charge one call. Returns credits charged (0 when covered by the free tier). */
+/** Charge one answered call. Returns credits charged (0 when covered by the free tier). */
 function chargeCall(sellerId, callId) {
-  return db.tx((d) => {
-    if (freeCallsUsed(sellerId) < config.freeCallsPerMonth) {
-      d.prepare(`INSERT INTO ledger (seller_id, kind, credits, ref) VALUES (?, 'free_call', 0, ?)`).run(sellerId, `call:${callId}`);
+  return db.tx(async (q) => {
+    if ((await freeCallsUsed(sellerId, new Date(), q)) < config.freeCallsPerMonth) {
+      await q.run(`INSERT INTO ledger (seller_id, kind, credits, ref, created_at) VALUES (?, 'free_call', 0, ?, ?)`, [sellerId, `call:${callId}`, db.now()]);
       return 0;
     }
     const c = config.creditsPerCall;
-    d.prepare('UPDATE sellers SET credits = credits - ? WHERE id=?').run(c, sellerId);
-    d.prepare(`INSERT INTO ledger (seller_id, kind, credits, ref) VALUES (?, 'call', ?, ?)`).run(sellerId, -c, `call:${callId}`);
+    await q.run('UPDATE sellers SET credits = credits - ? WHERE id=?', [c, sellerId]);
+    await q.run(`INSERT INTO ledger (seller_id, kind, credits, ref, created_at) VALUES (?, 'call', ?, ?, ?)`, [sellerId, -c, `call:${callId}`, db.now()]);
     return c;
   });
 }
 
-/**
- * Add credits for a bKash payment. `trxId` is unique, so replaying the same
- * transaction is a no-op. Returns true if credited.
- */
-function topUp(sellerId, takaAmount, trxId) {
-  const credits = Math.floor((Number(takaAmount) / config.takaPerCredit) * 100) / 100;
+/** Add credits for a verified bKash payment. Same trxId twice is a no-op. */
+async function topUp(sellerId, takaAmount, trxId) {
+  const credits = creditsForPayment(takaAmount);
   if (!(credits > 0) || !trxId) throw new Error('invalid top-up');
-  return db.tx((d) => {
-    const exists = d.prepare(`SELECT 1 FROM ledger WHERE kind='topup' AND ref=?`).get(`bkash:${trxId}`);
-    if (exists) return false;
-    d.prepare(`INSERT INTO ledger (seller_id, kind, credits, ref) VALUES (?, 'topup', ?, ?)`).run(sellerId, credits, `bkash:${trxId}`);
-    d.prepare('UPDATE sellers SET credits = credits + ? WHERE id=?').run(credits, sellerId);
+  return db.tx(async (q) => {
+    const ref = `bkash:${String(trxId).toUpperCase()}`;
+    if (await q.one(`SELECT 1 AS x FROM ledger WHERE kind='topup' AND ref=?`, [ref])) return false;
+    await q.run(`INSERT INTO ledger (seller_id, kind, credits, ref, created_at) VALUES (?, 'topup', ?, ?, ?)`, [sellerId, credits, ref, db.now()]);
+    await q.run('UPDATE sellers SET credits = credits + ? WHERE id=?', [credits, sellerId]);
     return true;
   });
 }
