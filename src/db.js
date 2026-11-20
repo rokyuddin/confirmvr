@@ -96,6 +96,23 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   key TEXT PRIMARY KEY,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tts_cache (
+  hash TEXT PRIMARY KEY,
+  mime TEXT NOT NULL,
+  audio_b64 TEXT NOT NULL,
+  text TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS topup_requests (
+  id @PK,
+  seller_id INTEGER NOT NULL REFERENCES sellers(id),
+  amount @REAL NOT NULL,
+  trx_id TEXT UNIQUE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  note TEXT,
+  created_at TEXT NOT NULL,
+  decided_at TEXT
+);
 `;
 
 function schemaFor(dialect) {

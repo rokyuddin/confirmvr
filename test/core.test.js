@@ -32,7 +32,7 @@ test.before(async () => {
     const { Client } = require('pg');
     const c = new Client({ connectionString: PG });
     await c.connect();
-    await c.query('DROP TABLE IF EXISTS webhook_events, notifications, ledger, calls, orders, sellers CASCADE');
+    await c.query('DROP TABLE IF EXISTS tts_cache, topup_requests, webhook_events, notifications, ledger, calls, orders, sellers CASCADE');
     await c.end();
   }
   await db.init({ url: PG || '', file: ':memory:', force: true });
@@ -293,5 +293,75 @@ test('HTTP: signup, pages, woo webhook, api, voice callback, courier, steadfast 
     const auth = require('../src/auth');
     res = await fetch(`${base}/orders/${apiOrder}/recall`, { method: 'POST', headers: { cookie: `cvr_session=${auth.sign(other.id)}` } });
     assert.equal(res.status, 404);
+  });
+});
+
+test('Azure TTS: prompts become cached audio URLs, synthesized once per text', async () => {
+  const config = require('../src/config');
+  const tts = require('../src/services/tts');
+  Object.assign(config, { azureSpeechKey: 'k', azureSpeechRegion: 'southeastasia' });
+  try {
+    let hits = 0;
+    const fetchImpl = async (url, init) => {
+      hits++;
+      assert.equal(url, 'https://southeastasia.tts.speech.microsoft.com/cognitiveservices/v1');
+      assert.match(init.body, /bn-BD-NabanitaNeural/);
+      assert.equal(init.headers['Ocp-Apim-Subscription-Key'], 'k');
+      return new Response(Buffer.from('ID3fakeaudio'), { status: 200 });
+    };
+    const script = buildScript({ page_name: 'পেজ', phone: null, voice_mode: 'tts' }, { product: 'শাড়ি', amount: 900 });
+    const out = await tts.resolveScript(script, { fetchImpl });
+    assert.ok(out.prompts.every((p) => p.type === 'audio' && /\/tts\/[a-f0-9]{32}\.mp3$/.test(p.url)));
+    const firstHits = hits;
+    await tts.resolveScript(script, { fetchImpl });
+    assert.equal(hits, firstHits); // all cached
+    const clip = await tts.getClip(out.prompts[0].url.match(/([a-f0-9]{32})/)[1]);
+    assert.equal(clip.audio.toString(), 'ID3fakeaudio');
+
+    // Azure down -> falls back to text prompts
+    const down = await tts.resolveScript(buildScript({ page_name: 'অন্য', voice_mode: 'tts' }, { product: 'নতুন', amount: 1 }),
+      { fetchImpl: async () => new Response('err', { status: 500 }) });
+    assert.ok(down.prompts.some((p) => p.type === 'tts'));
+  } finally {
+    Object.assign(config, { azureSpeechKey: '', azureSpeechRegion: '' });
+  }
+});
+
+test('top-up requests: submit, duplicate rejected, approve credits once and releases paused orders', async () => {
+  const topups = require('../src/services/topups');
+  const s = await seller();
+  assert.equal((await topups.submit(s.id, 500, 'abc12345')).ok, true);
+  assert.equal((await topups.submit(s.id, 500, 'ABC12345')).ok, false);
+  assert.equal((await topups.submit(s.id, 500, 'x')).ok, false);
+  const { order: o } = await createOrder(s.id, { phone: '01712345690', product: 'x', amount: 1 }, DAY);
+  await db.run(`UPDATE orders SET status='no_credit', next_call_at=NULL WHERE id=?`, [o.id]);
+  const req = await db.one('SELECT * FROM topup_requests WHERE seller_id=?', [s.id]);
+  assert.equal(await topups.approve(req.id), true);
+  assert.equal((await billing.summary(s.id)).credits, 400); // starter pack
+  assert.equal((await order(o.id)).status, 'pending');
+  await assert.rejects(topups.approve(req.id), /আগেই/);
+});
+
+test('admin panel: login required, approve request via HTTP', async () => {
+  await withServer(async (base) => {
+    let res = await fetch(`${base}/admin`, { redirect: 'manual' });
+    assert.equal(res.status, 302);
+    res = await fetch(`${base}/admin/login`, { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'token=wrong' });
+    assert.match(res.headers.get('location'), /err=/);
+    res = await fetch(`${base}/admin/login`, { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'token=admintok' });
+    const cookie = res.headers.get('set-cookie').split(';')[0];
+    for (const p of ['/admin', '/admin/sellers', '/admin/stats']) {
+      res = await fetch(base + p, { headers: { cookie } });
+      assert.equal(res.status, 200, p);
+    }
+    const s = await seller();
+    const topups = require('../src/services/topups');
+    await topups.submit(s.id, 150, 'HTTPTRX01');
+    const req = await db.one("SELECT * FROM topup_requests WHERE trx_id='HTTPTRX01'");
+    assert.match(await (await fetch(`${base}/admin`, { headers: { cookie } })).text(), /HTTPTRX01/);
+    await fetch(`${base}/admin/topups/${req.id}/approve`, { method: 'POST', redirect: 'manual', headers: { cookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'amount=150' });
+    assert.equal((await billing.summary(s.id)).credits, 100);
+    await fetch(`${base}/admin/sellers/${s.id}/adjust`, { method: 'POST', redirect: 'manual', headers: { cookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'credits=-10&reason=test' });
+    assert.equal((await billing.summary(s.id)).credits, 90);
   });
 });

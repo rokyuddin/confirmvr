@@ -46,9 +46,12 @@ module.exports = {
   voiceWebhookSecret: env('VOICE_WEBHOOK_SECRET', ''),
   mockAutoAnswer: env('MOCK_AUTO_ANSWER', ''), // e.g. "1" to auto-press 1 in mock mode
 
-  // Bangla TTS (optional). If unset, the provider receives text and synthesizes itself.
-  ttsUrl: env('TTS_URL', ''),
-  ttsApiKey: env('TTS_API_KEY', ''),
+  // Bangla TTS via Azure Speech (optional). If unset, the voice provider receives
+  // text prompts and synthesizes them itself.
+  azureSpeechKey: env('AZURE_SPEECH_KEY', ''),
+  azureSpeechRegion: env('AZURE_SPEECH_REGION', ''),
+  ttsVoice: env('TTS_VOICE', 'bn-BD-NabanitaNeural'), // or bn-BD-PradeepNeural
+  ttsFormat: env('TTS_FORMAT', 'audio-16khz-32kbitrate-mono-mp3'),
 
   // Risk flags
   riskCancelThreshold: num('RISK_CANCEL_THRESHOLD', 2),

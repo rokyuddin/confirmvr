@@ -76,7 +76,7 @@ X-Webhook-Secret: <VOICE_WEBHOOK_SECRET>
 
 ## bKash রিচার্জ
 
-সেলার `/billing` পেজ থেকে TrxID জমা দেয়। আপনি bKash-এ যাচাই করে ক্রেডিট যোগ করবেন:
+সেলার `/billing` পেজ থেকে TrxID জমা দেয়। আপনি `/admin` প্যানেলে মিলিয়ে অনুমোদন দেবেন। অথবা স্ক্রিপ্ট থেকে:
 
 ```bash
 curl -X POST $BASE_URL/admin/topup -H "Authorization: Bearer $ADMIN_TOKEN" \
@@ -106,6 +106,22 @@ curl -X POST $BASE_URL/admin/topup -H "Authorization: Bearer $ADMIN_TOKEN" \
 প্রতিটা অর্ডারের invoice হয় `CVR-<অর্ডার নম্বর>`। Steadfast একই invoice দুইবার নেয় না, তাই ডাবল ক্লিক বা টাইমআউটের পরে আবার চাপলে দুইবার বুক হয় না।
 
 Steadfast-এর অফিসিয়াল ডকুমেন্টেশন এই সেশন থেকে খোলা যায়নি। এন্ডপয়েন্ট আর ফিল্ডগুলো npm-এর `steadfast-merchant-sdk` আর `steadfast-courier` প্যাকেজের সোর্স থেকে মেলানো (সেগুলো Steadfast-এর নিজের Laravel প্যাকেজের সাথে মিলিয়ে বানানো)। প্রথম আসল বুকিংয়ের আগে প্যানেলের API গাইডের সাথে একবার মিলিয়ে নিন।
+
+## বাংলা ভয়েস (Azure TTS)
+
+`AZURE_SPEECH_KEY` আর `AZURE_SPEECH_REGION` দিলে কলের সব লেখা Azure-এর বাংলাদেশি ভয়েসে অডিও হয়ে যায় (`bn-BD-NabanitaNeural` নারী, `bn-BD-PradeepNeural` পুরুষ; `TTS_VOICE` দিয়ে বদলান)। Azure-এর ফ্রি টায়ারে প্রতি মাসে ৫ লাখ অক্ষর।
+
+- প্রতিটা লেখা একবারই অডিও করা হয়, তারপর ডাটাবেসে জমা থাকে আর `/tts/<hash>.mp3` থেকে প্রোভাইডার নিয়ে নেয়। মেনুর লাইন, পেজের নাম আর একই প্রোডাক্ট-দাম বারবার এলে নতুন করে খরচ হয় না।
+- Azure কাজ না করলে লেখাটাই প্রোভাইডারের কাছে যায়, কল আটকায় না।
+- টেলিফোনির জন্য প্রোভাইডার WAV চাইলে `TTS_FORMAT=riff-8khz-16bit-mono-pcm` দিন।
+- কী তৈরি করবেন: Azure Portal → Create resource → **Speech** → Pricing tier **Free F0**। তারপর Keys and Endpoint থেকে key আর region (যেমন `southeastasia`) নিন।
+
+## অ্যাডমিন প্যানেল
+
+`/admin` এ `ADMIN_TOKEN` দিয়ে লগইন করুন।
+- **টপআপ:** সেলারদের জমা দেওয়া bKash TrxID-এর তালিকা। bKash মার্চেন্ট অ্যাপে মিলিয়ে অনুমোদন দিলে ক্রেডিট যোগ হয়, আটকে থাকা অর্ডার আবার কলের তালিকায় যায় আর সেলার নোটিফিকেশন পায়। পরিমাণ ভুল থাকলে অনুমোদনের আগে ঠিক করা যায়, আর কারণ লিখে বাতিলও করা যায়।
+- **সেলার:** সব সেলার, তাদের অর্ডার, কনফার্ম রেট আর ক্রেডিট। কারণ লিখে ক্রেডিট যোগ বা কমানো যায় (লেজারে থেকে যায়)।
+- **পরিসংখ্যান:** আজ আর এই মাসের কল, কত শতাংশ ধরেছে, কাটা ক্রেডিট আর রিচার্জের টাকা।
 
 ## OpenRouter
 
@@ -149,7 +165,8 @@ src/
 api/index.js               Vercel এন্ট্রি
   routes/web.js            সেলার ড্যাশবোর্ড ও পেজগুলো
   routes/integrations.js   webhook (Woo/Shopify/Steadfast), API, ভয়েস কলব্যাক, cron, অ্যাডমিন টপআপ
-  services/                orders, calls (শিডিউলার), billing, sheets, steadfast, courier, llm (OpenRouter), risk, notify
+  routes/admin.js          অ্যাডমিন প্যানেল
+  services/                orders, calls (শিডিউলার), billing, topups, sheets, steadfast, courier, tts (Azure), llm (OpenRouter), risk, notify
   voice/                   ivr (কল স্ক্রিপ্ট), mock, http (প্রোভাইডার অ্যাডাপ্টার)
 test/core.test.js
 ```

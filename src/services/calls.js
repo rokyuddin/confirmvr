@@ -18,6 +18,7 @@ const { setStatus } = require('./orders');
 const { notify } = require('./notify');
 const { getProvider } = require('../voice');
 const { buildScript } = require('../voice/ivr');
+const tts = require('./tts');
 const { clampToCallWindow, addMin, iso } = require('../util');
 
 const STALE_CALL_MIN = 15; // a call with no callback after this is treated as no-answer
@@ -54,7 +55,7 @@ async function placeCallForOrder(order, now = new Date()) {
       callId,
       to: order.phone,
       callerId: config.voiceCallerId,
-      script: buildScript(seller, order),
+      script: await tts.resolveScript(buildScript(seller, order)),
       callbackUrl: `${config.baseUrl}/voice/callback`,
     });
     await db.run('UPDATE calls SET provider_call_id=? WHERE id=?', [providerCallId, callId]);

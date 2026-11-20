@@ -11,7 +11,7 @@ const steadfast = require('../services/steadfast');
 const sheets = require('../services/sheets');
 const risk = require('../services/risk');
 const llm = require('../services/llm');
-const { notify } = require('../services/notify');
+const topups = require('../services/topups');
 const { createOrder, setStatus, STATUS_LABELS } = require('../services/orders');
 const { fullText } = require('../voice/ivr');
 const { PLANS } = require('../pricing');
@@ -291,6 +291,7 @@ r.get('/billing', async (req, res) => {
   const b = await billing.summary(req.seller.id);
   const ledger = await db.all("SELECT * FROM ledger WHERE seller_id=? AND kind != 'free_call' ORDER BY id DESC LIMIT 50", [req.seller.id]);
   const plan = PLANS.find((p) => p.id === req.query.plan && p.price > 0);
+  const pending = await db.all(`SELECT * FROM topup_requests WHERE seller_id=? AND status='pending' ORDER BY id DESC`, [req.seller.id]);
   page(req, res, 'ক্রেডিট', `
 <div class="stats">
   <div class="card stat"><b>${toBnDigits(b.freeLeft)}/${toBnDigits(b.freeTotal)}</b>এই মাসের ফ্রি কল বাকি</div>
@@ -311,18 +312,16 @@ ${pricingCards({ cta: '/billing', compact: true })}
   </form>
   <p class="muted">প্যাকের দামের সমান টাকা পাঠালে পুরো প্যাক পাবেন। অন্য পরিমাণে ১ ক্রেডিট = ${toBnDigits(config.takaPerCredit)} টাকা।</p>
 </div>
+${pending.length ? `<div class="card narrow"><h3>যাচাইয়ের অপেক্ষায়</h3><ul>${pending.map((t) => `<li>${bnTaka(t.amount)} · TrxID <span class="mono">${esc(t.trx_id)}</span> · ${dhakaTime(t.created_at)}</li>`).join('')}</ul></div>` : ''}
 <h3>লেনদেন</h3>
 <table class="orders"><thead><tr><th>তারিখ</th><th>ধরন</th><th>ক্রেডিট</th><th>রেফ</th></tr></thead><tbody>
-${ledger.map((l) => `<tr><td>${dhakaTime(l.created_at)}</td><td>${l.kind === 'topup' ? 'রিচার্জ' : l.kind === 'call' ? 'কল' : esc(l.kind)}</td><td>${l.credits}</td><td class="mono">${esc(l.ref)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">এখনো কোনো লেনদেন নেই</td></tr>'}
+${ledger.map((l) => `<tr><td>${dhakaTime(l.created_at)}</td><td>${l.kind === 'topup' ? 'রিচার্জ' : l.kind === 'call' ? 'কল' : l.kind === 'adjust' ? 'সমন্বয়' : esc(l.kind)}</td><td>${l.credits}</td><td class="mono">${esc(l.ref)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">এখনো কোনো লেনদেন নেই</td></tr>'}
 </tbody></table>`);
 });
 
 r.post('/billing/topup-request', async (req, res) => {
-  const trx = String(req.body.trx_id || '').trim().toUpperCase();
-  if (!/^[A-Z0-9]{8,12}$/.test(trx)) return back(res, '/billing', 'err', 'TrxID সঠিক নয়');
-  await notify(req.seller.id, null, `রিচার্জ রিকোয়েস্ট জমা হয়েছে: ${Number(req.body.amount) || 0} টাকা, TrxID ${trx}। ভেরিফাই হলে ক্রেডিট যোগ হবে।`);
-  console.log(`[billing] top-up request seller=${req.seller.id} amount=${req.body.amount} trx=${trx}`);
-  back(res, '/billing', 'ok', 'রিকোয়েস্ট জমা হয়েছে। ভেরিফাই হলে ক্রেডিট যোগ হবে।');
+  const out = await topups.submit(req.seller.id, req.body.amount, req.body.trx_id);
+  out.ok ? back(res, '/billing', 'ok', 'রিকোয়েস্ট জমা হয়েছে। ভেরিফাই হলে ক্রেডিট যোগ হবে।') : back(res, '/billing', 'err', out.error);
 });
 
 // ---------- Settings ----------

@@ -6,6 +6,7 @@ const config = require('../config');
 const billing = require('../services/billing');
 const calls = require('../services/calls');
 const sheets = require('../services/sheets');
+const topups = require('../services/topups');
 const { createOrder } = require('../services/orders');
 const { notify } = require('../services/notify');
 const { hmac, safeEqual } = require('../util');
@@ -100,6 +101,14 @@ r.post('/webhooks/steadfast/:token', wrap(async (req, res) => {
   res.json({ status: 'success', message: 'Webhook received' });
 }));
 
+// ---- Cached TTS audio (fetched by the voice provider during the call) ----
+r.get('/tts/:file', wrap(async (req, res) => {
+  const m = /^([a-f0-9]{32})\.(mp3|wav|bin)$/.exec(req.params.file);
+  const clip = m && await require('../services/tts').getClip(m[1]);
+  if (!clip) return res.status(404).end();
+  res.set('Cache-Control', 'public, max-age=31536000, immutable').type(clip.mime).send(clip.audio);
+}));
+
 // ---- Generic JSON API ----
 r.post('/api/orders', wrap(async (req, res) => {
   const seller = await sellerByToken(req.get('X-Api-Key'));
@@ -142,11 +151,7 @@ r.post('/admin/topup', wrap(async (req, res) => {
   const sellerId = Number(String(seller_id).replace(/^CVR/i, ''));
   if (!(await db.one('SELECT 1 AS x FROM sellers WHERE id=?', [sellerId]))) return res.status(404).json({ error: 'seller not found' });
   try {
-    const credited = await billing.topUp(sellerId, amount, trx_id);
-    if (credited) {
-      for (const o of await db.all("SELECT id FROM orders WHERE seller_id=? AND status='no_credit'", [sellerId])) await calls.requeue(o.id);
-      await notify(sellerId, null, `রিচার্জ সফল: ${amount} টাকা (TrxID ${trx_id})।`);
-    }
+    const credited = await topups.credit(sellerId, amount, trx_id);
     res.json({ ok: true, credited, balance: (await billing.summary(sellerId)).credits });
   } catch (e) {
     res.status(422).json({ error: e.message });

@@ -16,6 +16,7 @@ function createApp() {
   app.use(express.static(path.join(__dirname, '..', 'public')));
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
   app.use(require('./routes/integrations'));
+  app.use(require('./routes/admin'));
   app.use(auth.loadSeller);
   app.use(require('./routes/web'));
   app.use((err, _req, res, _next) => {
